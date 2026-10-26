@@ -1,12 +1,23 @@
 // ==UserScript==
 // @name           Stay in Space on Move
-// @description    "Move to..." sends tabs to another Space without switching you there.
+// @description    "Move to..." sends tabs to another Space without switching you there (Shift-click to follow the tabs instead).
 // @ignorecache
 // ==/UserScript==
 
 (function () {
   "use strict";
   const TAG = "[StayInSpace]";
+
+  // Shift held while choosing a Space in "Move to..." follows the tabs for that
+  // one move (stock Zen behaviour). The menu item's command event carries the modifier
+  // keys; remember them briefly so the move handler can read them.
+  let lastMenuCommand = { shift: false, at: 0 };
+  document.addEventListener("command", e => {
+    // Zen's menu items forward their command to a <command> element; the original
+    // click (with its modifier keys) rides along as sourceEvent.
+    lastMenuCommand = { shift: !!(e.shiftKey || e.sourceEvent?.shiftKey), at: Date.now() };
+  }, true);
+  const shiftWasHeld = () => lastMenuCommand.shift && Date.now() - lastMenuCommand.at < 1000;
 
   const isSplit = t => !!t.group?.hasAttribute?.("split-view-group");
   const isEssential = t => t.hasAttribute("zen-essential");
@@ -96,6 +107,38 @@
     if (report.length) console.info(TAG, "repaired Zen sync glitch:", report.join("; "));
   }
 
+  // Let Zen's window sync run, then fix anything it left outside the Space.
+  // Two passes because sync processes moves one at a time, asynchronously.
+  // Used in both modes: the Zen bug happens whether or not you follow the tabs.
+  function scheduleRepair(movedInOrder, workspaceID) {
+    const safeRepair = () => {
+      try { repairOtherWindows(movedInOrder, workspaceID); }
+      catch (e) { console.error(TAG, "repair pass failed:", e); }
+    };
+    setTimeout(safeRepair, 600);
+    setTimeout(safeRepair, 1500);
+
+    // Sanity check: only speaks up if a tab is STILL misplaced somewhere.
+    setTimeout(() => {
+      try {
+        for (const w of Services.wm.getEnumerator("navigator:browser")) {
+          if (w === window || !w.gZenWorkspaces) continue;
+          const target = w.gZenWorkspaces.workspaceElement?.(workspaceID);
+          const stuck = movedInOrder.filter(t => {
+            const el = w.document.getElementById(t.id);
+            return el && !(target && target.contains(el));
+          });
+          if (stuck.length) {
+            console.warn(TAG, `${stuck.length} moved tab(s) still outside the Space in a window showing ${w.gZenWorkspaces.activeWorkspace}`,
+              stuck.map(t => t.id));
+          }
+        }
+      } catch (e) {
+        console.error(TAG, "check failed:", e);
+      }
+    }, 2500);
+  }
+
   function patch() {
     const ws = window.gZenWorkspaces;
     if (!ws || typeof ws.changeTabWorkspace !== "function" || typeof ws.moveTabsToWorkspace !== "function") {
@@ -106,8 +149,9 @@
 
     // Replaces Zen's handler for the tab context menu "Move to..." items.
     // Zen's original: move tabs -> remember last tab for target -> changeWorkspace(target).
-    // This version does the same minus the changeWorkspace, after making sure
-    // the tab you're looking at isn't one that's about to leave.
+    // Normally it skips the changeWorkspace, after making sure the tab you're
+    // looking at isn't one that's about to leave. Shift-click follows the tabs
+    // like Zen. Both paths repair Zen's window-sync glitch afterwards.
     ws.changeTabWorkspace = async function (workspaceID) {
       try {
         const ctxTab = TabContextMenu.contextTab;
@@ -123,6 +167,23 @@
           if (t.getAttribute("zen-workspace-id") === workspaceID) moving.delete(t);
         }
         if (!moving.size) return;
+
+        const follow = shiftWasHeld();
+        const movedInOrder = tabs.filter(t => moving.has(t));
+        for (const t of moving) if (!movedInOrder.includes(t)) movedInOrder.push(t);
+
+        if (follow) {
+          // Shift-click: stock Zen behaviour - move, then switch to the destination Space and
+          // show the last moved tab there.
+          ws.moveTabsToWorkspace([...moving], workspaceID);
+          gBrowser.clearMultiSelectedTabs?.();
+          const last = movedInOrder[movedInOrder.length - 1];
+          ws.lastSelectedWorkspaceTabs[workspaceID] =
+            window.gZenGlanceManager?.getTabOrGlanceParent?.(last) ?? last;
+          scheduleRepair(movedInOrder, workspaceID);
+          await ws.changeWorkspace(ws.getWorkspaces().find(w => w.uuid === workspaceID));
+          return;
+        }
 
         // Is the tab on screen leaving? Covers: it was right-clicked, it's part of
         // a multiselection (Firefox always includes the selected tab in one), it's
@@ -161,39 +222,10 @@
         // Don't leave invisible tabs multiselected in the old Space.
         gBrowser.clearMultiSelectedTabs?.();
 
-        // Let Zen's window sync run, then fix anything it left outside the Space.
-        // Two passes because sync processes moves one at a time, asynchronously.
-        const movedInOrder = tabs.filter(t => moving.has(t));
-        for (const t of moving) if (!movedInOrder.includes(t)) movedInOrder.push(t);
-        const safeRepair = () => {
-          try { repairOtherWindows(movedInOrder, workspaceID); }
-          catch (e) { console.error(TAG, "repair pass failed:", e); }
-        };
-        setTimeout(safeRepair, 600);
-        setTimeout(safeRepair, 1500);
-
-        // Sanity check: only speaks up if a tab is STILL misplaced somewhere.
-        setTimeout(() => {
-          try {
-            for (const w of Services.wm.getEnumerator("navigator:browser")) {
-              if (w === window || !w.gZenWorkspaces) continue;
-              const target = w.gZenWorkspaces.workspaceElement?.(workspaceID);
-              const stuck = movedInOrder.filter(t => {
-                const el = w.document.getElementById(t.id);
-                return el && !(target && target.contains(el));
-              });
-              if (stuck.length) {
-                console.warn(TAG, `${stuck.length} moved tab(s) still outside the Space in a window showing ${w.gZenWorkspaces.activeWorkspace}`,
-                  stuck.map(t => t.id));
-              }
-            }
-          } catch (e) {
-            console.error(TAG, "check failed:", e);
-          }
-        }, 2500);
+        scheduleRepair(movedInOrder, workspaceID);
 
         // Same as Zen: when you later visit that Space, show the moved tab.
-        const last = tabs.filter(t => moving.has(t)).pop() ?? [...moving].pop();
+        const last = movedInOrder[movedInOrder.length - 1];
         ws.lastSelectedWorkspaceTabs[workspaceID] =
           window.gZenGlanceManager?.getTabOrGlanceParent?.(last) ?? last;
       } catch (e) {

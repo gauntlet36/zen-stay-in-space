@@ -1,7 +1,7 @@
 {
   "id": "stay-in-space-on-move",
   "name": "Stay in Space on Move",
-  "description": "Moving a tab to another Space with \"Move to...\" keeps you in your current Space.",
+  "description": "\"Move to...\" keeps you in your current Space; Shift-click to follow the tabs. Also repairs a Zen window-sync glitch with multi-tab moves.",
   "scripts": {
     "stay-in-space.uc.js": {
       "include": ["chrome://browser/content/browser.xhtml"]
@@ -9,9 +9,9 @@
   },
   "homepage": "https://github.com/gauntlet36/zen-stay-in-space",
   "author": "gauntlet36",
-  "version": "1.3.0",
+  "version": "1.5.0",
   "tags": ["Zen Browser", "Spaces", "Workspaces"],
   "createdAt": "2026-10-21",
-  "updatedAt": "2026-10-26T13:00:00Z",
+  "updatedAt": "2026-10-26T15:00:00Z",
   "fork": ["zen"]
 }
