@@ -43,6 +43,59 @@
     );
   }
 
+  // WORKAROUND for a Zen window-sync bug: when a batch of tabs is moved,
+  // ZenWindowSync mirrors each move into other windows. In a window that is
+  // SHOWING the destination Space, its drop animation
+  // (ZenDragAndDrop.handle_drop_transition) throws "ele is undefined" for the
+  // 2nd+ tab, and those tabs end up tagged with the new Space but left outside
+  // its tab list (invisible). This puts any such stragglers in place, in the
+  // same order as the source window.
+  function repairOtherWindows(movedInOrder, workspaceID) {
+    const report = [];
+    for (const w of Services.wm.getEnumerator("navigator:browser")) {
+      if (w === window || w.closed || !w.gZenWorkspaces || !w.gBrowser) continue;
+      const target = w.gZenWorkspaces.workspaceElement?.(workspaceID);
+      if (!target) continue;
+      const doc = w.document;
+      const done = new Set();
+      let fixed = 0;
+      for (const src of movedInOrder) {
+        const el = doc.getElementById(src.id);
+        if (!el || el.getAttribute("zen-workspace-id") !== workspaceID || target.contains(el)) continue;
+        const item = isSplit(el) ? el.group : el;
+        if (done.has(item)) continue;
+        done.add(item);
+        const container = el.pinned ? target.pinnedTabsContainer : target.tabsContainer;
+        if (!container) continue;
+
+        // Mirror the source window: go right after the nearest earlier sibling
+        // (in the source window) whose copy here is already inside the Space.
+        let anchor = null;
+        let srcItem = isSplit(src) ? src.group : src;
+        for (let prev = srcItem.previousElementSibling; prev; prev = prev.previousElementSibling) {
+          if (!prev.id) continue;
+          let c = doc.getElementById(prev.id);
+          if (c && isSplit(c)) c = c.group;
+          if (c && container.contains(c)) { anchor = c; break; }
+        }
+        try {
+          w.gBrowser.zenHandleTabMove(item, () => {
+            if (anchor) anchor.after(item);
+            else container.insertBefore(item, container.lastChild ?? null);
+          });
+          fixed++;
+        } catch (e) {
+          console.error(TAG, "repair failed for", src.id, e);
+        }
+      }
+      if (fixed) {
+        w.gBrowser.tabContainer?._invalidateCachedTabs?.();
+        report.push(`${fixed} tab(s) in a window showing ${w.gZenWorkspaces.activeWorkspace}`);
+      }
+    }
+    if (report.length) console.info(TAG, "repaired Zen sync glitch:", report.join("; "));
+  }
+
   function patch() {
     const ws = window.gZenWorkspaces;
     if (!ws || typeof ws.changeTabWorkspace !== "function" || typeof ws.moveTabsToWorkspace !== "function") {
@@ -108,34 +161,36 @@
         // Don't leave invisible tabs multiselected in the old Space.
         gBrowser.clearMultiSelectedTabs?.();
 
-        // DIAGNOSTIC (v1.2.1): one second later, report what every other window sees.
-        const movedIds = [...moving].map(t => t.id);
+        // Let Zen's window sync run, then fix anything it left outside the Space.
+        // Two passes because sync processes moves one at a time, asynchronously.
+        const movedInOrder = tabs.filter(t => moving.has(t));
+        for (const t of moving) if (!movedInOrder.includes(t)) movedInOrder.push(t);
+        const safeRepair = () => {
+          try { repairOtherWindows(movedInOrder, workspaceID); }
+          catch (e) { console.error(TAG, "repair pass failed:", e); }
+        };
+        setTimeout(safeRepair, 600);
+        setTimeout(safeRepair, 1500);
+
+        // Sanity check: only speaks up if a tab is STILL misplaced somewhere.
         setTimeout(() => {
           try {
-            const others = [...Services.wm.getEnumerator("navigator:browser")].filter(w => w !== window);
-            console.info(TAG, `moved ${movedIds.length} tab(s) to ${workspaceID}; other windows: ${others.length}`,
-              `sync enabled=${Services.prefs.getBoolPref("zen.window-sync.enabled", true)}`,
-              `pinnedOnly=${Services.prefs.getBoolPref("zen.window-sync.sync-only-pinned-tabs", false)}`);
-            others.forEach((w, i) => {
-              const target = w.gZenWorkspaces?.workspaceElement?.(workspaceID);
-              const rows = movedIds.map(id => {
-                const el = w.document.getElementById(id);
-                return {
-                  id,
-                  existsInWindow: !!el,
-                  workspaceAttr: el?.getAttribute("zen-workspace-id") ?? null,
-                  attrMatchesTarget: el?.getAttribute("zen-workspace-id") === workspaceID,
-                  insideTargetSpace: !!(el && target?.contains(el)),
-                  pinned: !!el?.pinned,
-                };
+            for (const w of Services.wm.getEnumerator("navigator:browser")) {
+              if (w === window || !w.gZenWorkspaces) continue;
+              const target = w.gZenWorkspaces.workspaceElement?.(workspaceID);
+              const stuck = movedInOrder.filter(t => {
+                const el = w.document.getElementById(t.id);
+                return el && !(target && target.contains(el));
               });
-              console.info(TAG, `window #${i + 1} is showing Space ${w.gZenWorkspaces?.activeWorkspace}`);
-              console.table(rows);
-            });
+              if (stuck.length) {
+                console.warn(TAG, `${stuck.length} moved tab(s) still outside the Space in a window showing ${w.gZenWorkspaces.activeWorkspace}`,
+                  stuck.map(t => t.id));
+              }
+            }
           } catch (e) {
-            console.error(TAG, "diagnostic failed:", e);
+            console.error(TAG, "check failed:", e);
           }
-        }, 1000);
+        }, 2500);
 
         // Same as Zen: when you later visit that Space, show the moved tab.
         const last = tabs.filter(t => moving.has(t)).pop() ?? [...moving].pop();
