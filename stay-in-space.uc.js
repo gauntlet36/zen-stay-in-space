@@ -76,28 +76,34 @@
         // the other half of a split being moved, or it's a Glance over a moved tab.
         const current = gBrowser.selectedTab;
         const currentRoot = window.gZenGlanceManager?.getTabOrGlanceParent?.(current) ?? current;
-        if (moving.has(current) || moving.has(currentRoot)) {
+        let landing = null;
+        const currentLeaving = moving.has(current) || moving.has(currentRoot);
+        if (currentLeaving) {
+          // Pick where to land NOW, while the tab strip still shows this Space.
           const visible = gBrowser.visibleTabs;
           const idx = Math.max(visible.indexOf(currentRoot), 0);
           const ok = t => isLandingCandidate(t, moving);
-          // Nearest survivor below the current tab, else nearest above.
-          const next =
+          landing =
             visible.slice(idx + 1).find(ok) ||
-            visible.slice(0, idx).reverse().find(ok);
+            visible.slice(0, idx).reverse().find(ok) ||
+            null;
+        }
 
-          if (next) {
-            gBrowser.selectedTab = next;
+        // Move FIRST, select AFTER - the same order Zen itself uses. Selecting a
+        // tab before moving kicks off window sync's tab-switch handling, and while
+        // another window is busy with that, Zen's window sync drops the TabMove
+        // events for the moved tabs (only the first one reached other windows).
+        ws.moveTabsToWorkspace([...moving], workspaceID);
+
+        if (currentLeaving) {
+          if (landing && !landing.closing) {
+            gBrowser.selectedTab = landing;
           } else {
-            // Every tab in this Space is being moved: land on Zen's empty tab
+            // Every tab in this Space was moved: land on Zen's empty tab
             // (same as closing the last tab in a Space).
             ws.selectEmptyTab();
           }
-          // Let Zen finish reacting to the selection change (e.g. tearing down
-          // the split view being left) before tabs start moving.
-          await new Promise(r => requestAnimationFrame(() => r()));
         }
-
-        ws.moveTabsToWorkspace([...moving], workspaceID);
 
         // Don't leave invisible tabs multiselected in the old Space.
         gBrowser.clearMultiSelectedTabs?.();
