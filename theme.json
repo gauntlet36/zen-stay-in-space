@@ -9,9 +9,9 @@
   },
   "homepage": "https://github.com/gauntlet36/zen-stay-in-space",
   "author": "gauntlet36",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "tags": ["Zen Browser", "Spaces", "Workspaces"],
   "createdAt": "2026-10-21",
-  "updatedAt": "2026-10-26T11:00:00Z",
+  "updatedAt": "2026-10-26T12:00:00Z",
   "fork": ["zen"]
 }

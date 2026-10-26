@@ -108,6 +108,35 @@
         // Don't leave invisible tabs multiselected in the old Space.
         gBrowser.clearMultiSelectedTabs?.();
 
+        // DIAGNOSTIC (v1.2.1): one second later, report what every other window sees.
+        const movedIds = [...moving].map(t => t.id);
+        setTimeout(() => {
+          try {
+            const others = [...Services.wm.getEnumerator("navigator:browser")].filter(w => w !== window);
+            console.info(TAG, `moved ${movedIds.length} tab(s) to ${workspaceID}; other windows: ${others.length}`,
+              `sync enabled=${Services.prefs.getBoolPref("zen.window-sync.enabled", true)}`,
+              `pinnedOnly=${Services.prefs.getBoolPref("zen.window-sync.sync-only-pinned-tabs", false)}`);
+            others.forEach((w, i) => {
+              const target = w.gZenWorkspaces?.workspaceElement?.(workspaceID);
+              const rows = movedIds.map(id => {
+                const el = w.document.getElementById(id);
+                return {
+                  id,
+                  existsInWindow: !!el,
+                  workspaceAttr: el?.getAttribute("zen-workspace-id") ?? null,
+                  attrMatchesTarget: el?.getAttribute("zen-workspace-id") === workspaceID,
+                  insideTargetSpace: !!(el && target?.contains(el)),
+                  pinned: !!el?.pinned,
+                };
+              });
+              console.info(TAG, `window #${i + 1} is showing Space ${w.gZenWorkspaces?.activeWorkspace}`);
+              console.table(rows);
+            });
+          } catch (e) {
+            console.error(TAG, "diagnostic failed:", e);
+          }
+        }, 1000);
+
         // Same as Zen: when you later visit that Space, show the moved tab.
         const last = tabs.filter(t => moving.has(t)).pop() ?? [...moving].pop();
         ws.lastSelectedWorkspaceTabs[workspaceID] =
